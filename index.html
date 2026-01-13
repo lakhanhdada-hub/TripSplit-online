@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>TripSplit Online Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+            // --- DÁN CẤU HÌNH FIREBASE CỦA BẠN VÀO ĐÂY ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyBUmnDvEzEM_3qEMh2wQbpWJ_j0fz9z2Uc",
+            authDomain: "tripsplit-6b1cf.firebaseapp.com",
+            projectId: "tripsplit-6b1cf",
+            storageBucket: "tripsplit-6b1cf.firebasestorage.app",
+            messagingSenderId: "670366509810",
+            appId: "1:670366509810:web:be04bcb362638c1bfabe6b"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        
+        window.firebaseDB = db;
+        window.firebaseMethods = { doc, onSnapshot, setDoc };
+    </script>
+
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+        .animate-bounce-in { animation: bounce-in 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        @keyframes bounce-in { 0% { transform: translateY(-20px); opacity: 0; } 100% { transform: translateY(0); opacity: 1; } }
+        ::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body class="bg-slate-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect } = React;
+
+        const Icon = ({ name, className }) => {
+            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [name]);
+            return <i data-lucide={name} className={className}></i>;
+        };
+
+        const App = () => {
+            const [data, setData] = useState({ members: [], expenses: [], contributions: [], treasurerId: null });
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+
+            useEffect(() => {
+                const checkFirebase = setInterval(() => {
+                    if (window.firebaseDB && window.firebaseMethods) {
+                        clearInterval(checkFirebase);
+                        const { doc, onSnapshot } = window.firebaseMethods;
+                        const tripRef = doc(window.firebaseDB, "trips", "trip_group_default");
+
+                        const unsubscribe = onSnapshot(tripRef, (docSnap) => {
+                            if (docSnap.exists()) {
+                                setData(docSnap.data());
+                            } else {
+                                window.firebaseMethods.setDoc(tripRef, { members: [], expenses: [], contributions: [], treasurerId: null });
+                            }
+                            setLoading(false);
+                        }, (err) => {
+                            setError("Lỗi kết nối Firebase.");
+                            setLoading(false);
+                        });
+                        return () => unsubscribe();
+                    }
+                }, 100);
+            }, []);
+
+            const syncData = async (newData) => {
+                try {
+                    const { doc, setDoc } = window.firebaseMethods;
+                    const tripRef = doc(window.firebaseDB, "trips", "trip_group_default");
+                    await setDoc(tripRef, newData);
+                } catch (e) {
+                    console.error("Sync error:", e);
+                }
+            };
+
+            const { members = [], expenses = [], contributions = [], treasurerId = null } = data;
+
+            // UI State
+            const [activeTab, setActiveTab] = useState('report');
+            const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
+            const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+            const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
+            const [showContributionId, setShowContributionId] = useState(null);
+            const [memberToDelete, setMemberToDelete] = useState(null);
+            const [editingExpenseId, setEditingExpenseId] = useState(null);
+            
+            // Form State
+            const [newMemberName, setNewMemberName] = useState('');
+            const [description, setDescription] = useState('');
+            const [amount, setAmount] = useState('');
+            const [payerId, setPayerId] = useState('fund');
+            const [splitWith, setSplitWith] = useState([]);
+            const [isAdvance, setIsAdvance] = useState(false);
+            const [copySuccess, setCopySuccess] = useState(false);
+
+            // Thống kê
+            const stats = useMemo(() => {
+                const totalSpent = expenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+                const totalCashIn = contributions.reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
+                const fundSpent = expenses.filter(e => e.payerId === 'fund').reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+                const currentFund = totalCashIn - fundSpent;
+                
+                const pendingAdvances = expenses.filter(e => !!e.isAdvance && !e.isProcessed);
+
+                const mStats = members.map(m => {
+                    const cash = contributions.filter(c => c.memberId === m.id).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+                    const help = expenses.filter(e => e.payerId === m.id).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+                    const enjoyed = expenses.reduce((s, e) => {
+                        const amt = Number(e.amount) || 0;
+                        const splitList = e.splitWith || [];
+                        return (splitList.includes(m.id) ? s + (amt / splitList.length) : s);
+                    }, 0);
+                    return { 
+                        ...m, 
+                        balance: (cash + help) - enjoyed, 
+                        totalContributed: cash + help, 
+                        totalEnjoyed: enjoyed,
+                        onlyCash: cash,
+                        onlyHelp: help
+                    };
+                });
+                return { totalSpent, currentFund, mStats, pendingAdvances };
+            }, [data]);
+
+            const allReceipts = useMemo(() => {
+                const logs = contributions.map(c => ({ ...c, type: 'cash', label: 'Nộp quỹ' }));
+                const helpers = expenses.filter(e => e.payerId !== 'fund').map(e => ({
+                    id: e.id, memberId: e.payerId, amount: e.amount, date: e.date, description: e.description, type: 'help', label: 'Chi hộ'
+                }));
+                return [...logs, ...helpers].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            }, [contributions, expenses]);
+
+            const handleAddMember = () => {
+                if (!newMemberName.trim()) return;
+                const newMember = { id: crypto.randomUUID(), name: newMemberName.trim(), createdAt: Date.now() };
+                syncData({ ...data, members: [...members, newMember] });
+                setNewMemberName('');
+            };
+
+            const handleSaveExpense = () => {
+                const val = parseFloat(amount);
+                if (!description || !val || splitWith.length === 0) return;
+                let newExpenses = [...expenses];
+
+                const finalPayerId = (payerId !== 'fund' && !members.find(m => m.id === payerId)) ? 'fund' : payerId;
+
+                if (editingExpenseId) {
+                    newExpenses = newExpenses.map(e => e.id === editingExpenseId ? { 
+                        ...e, 
+                        description, 
+                        amount: val, 
+                        payerId: finalPayerId, 
+                        splitWith, 
+                        isAdvance: !!isAdvance 
+                    } : e);
+                } else {
+                    const newExpense = {
+                        id: crypto.randomUUID(), 
+                        description, 
+                        amount: val, 
+                        payerId: finalPayerId, 
+                        splitWith, 
+                        isAdvance: !!isAdvance, 
+                        isProcessed: false,
+                        date: new Date().toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }),
+                        createdAt: Date.now()
+                    };
+                    newExpenses = [newExpense, ...newExpenses];
+                }
+                syncData({ ...data, expenses: newExpenses });
+                setIsExpenseModalOpen(false);
+                setEditingExpenseId(null);
+            };
+
+            const handleProcessAdvance = (id) => {
+                const newExpenses = expenses.map(e => e.id === id ? { ...e, isProcessed: true } : e);
+                syncData({ ...data, expenses: newExpenses });
+            };
+
+            const resetAllData = () => {
+                syncData({ members: [], expenses: [], contributions: [], treasurerId: null });
+                setIsResetConfirmOpen(false);
+            };
+
+            if (loading) return (
+                <div className="flex flex-col items-center justify-center h-screen space-y-4 text-slate-400">
+                    <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                    <p className="font-black uppercase text-[10px] tracking-widest">Đang tải dữ liệu...</p>
+                </div>
+            );
+
+            return (
+                <div className="max-w-md mx-auto min-h-screen pb-24 relative">
+                    <header className={`p-6 pb-12 rounded-b-[3rem] text-white shadow-xl sticky top-0 z-40 transition-all duration-500 ${stats.currentFund < 0 ? 'bg-rose-600' : 'bg-slate-900'}`}>
+                        <div className="flex justify-between items-center mb-6">
+                            <h1 className="font-black italic uppercase tracking-tighter flex items-center gap-2 text-lg leading-none">
+                                <Icon name="zap" className="text-amber-400" /> TripSplit
+                            </h1>
+                            <button onClick={() => setIsResetConfirmOpen(true)} className="p-2 bg-white/10 rounded-xl active:scale-95 transition-transform">
+                                <Icon name="refresh-ccw" className="w-4 h-4 text-white/50" />
+                            </button>
+                        </div>
+                        <div className="flex justify-between items-center bg-white/10 backdrop-blur-md rounded-[2rem] p-4 border border-white/20">
+                            <div className="text-center flex-1">
+                                <p className="text-[8px] opacity-70 uppercase font-bold tracking-widest">Quỹ hiện tại</p>
+                                <p className="text-xl font-black">{stats.currentFund.toLocaleString()}K</p>
+                            </div>
+                            <button onClick={() => { 
+                                setEditingExpenseId(null); 
+                                setDescription(''); 
+                                setAmount(''); 
+                                setPayerId('fund'); 
+                                setIsAdvance(false); 
+                                setSplitWith(members.map(m => m.id)); 
+                                setIsExpenseModalOpen(true); 
+                            }} 
+                                className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg active:scale-95 transition-all ${stats.currentFund < 0 ? 'bg-white text-rose-600' : 'bg-indigo-500 text-white'}`}>
+                                <Icon name="plus" />
+                            </button>
+                            <div className="text-center flex-1">
+                                <p className="text-[8px] opacity-70 uppercase font-bold tracking-widest">Tổng chi tiêu</p>
+                                <p className="text-xl font-black">{stats.totalSpent.toLocaleString()}K</p>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="p-4 space-y-4">
+                        {activeTab === 'report' && stats.pendingAdvances.length > 0 && (
+                            <div className="space-y-2 animate-bounce-in">
+                                <div className="flex items-center gap-2 text-[10px] font-black uppercase text-amber-600 px-2 tracking-widest">
+                                    <Icon name="bell" className="w-3 h-3" /> Tạm ứng chờ xử lý ({stats.pendingAdvances.length})
+                                </div>
+                                {stats.pendingAdvances.map(adv => (
+                                    <div key={adv.id} className="bg-amber-50 border-2 border-amber-200 p-4 rounded-[1.5rem] flex justify-between items-center shadow-sm">
+                                        <div className="flex items-center gap-3">
+                                            <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
+                                                <Icon name="timer" className="w-5 h-5" />
+                                            </div>
+                                            <div>
+                                                <p className="text-xs font-black text-amber-900">{adv.description}</p>
+                                                <p className="text-[10px] font-bold text-amber-700 uppercase tracking-tighter">{adv.amount.toLocaleString()}K • {adv.date}</p>
+                                            </div>
+                                        </div>
+                                        <button onClick={() => handleProcessAdvance(adv.id)} className="bg-amber-600 text-white px-3 py-2 rounded-xl text-[9px] font-black uppercase active:scale-95 shadow-md shadow-amber-200">Xong</button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {activeTab === 'report' && (
+                            <>
+                                <div className="bg-white p-3 rounded-[1.5rem] shadow-sm flex gap-2">
+                                    <input className="flex-1 px-4 py-2 bg-slate-50 rounded-xl text-sm font-bold outline-none border border-transparent focus:border-slate-200 transition-all" placeholder="Thêm thành viên..." value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAddMember()}/>
+                                    <button onClick={handleAddMember} className="p-2 bg-slate-900 text-white rounded-xl active:scale-95 transition-transform"><Icon name="plus" /></button>
+                                </div>
+                                {members.map(m => {
+                                    const ms = stats.mStats.find(s=>s.id===m.id);
+                                    return (
+                                        <div key={m.id} className="bg-white p-5 rounded-[2rem] border border-slate-100 shadow-sm animate-bounce-in relative overflow-hidden">
+                                            <div className="flex justify-between items-center mb-4">
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`p-2.5 rounded-xl transition-colors ${treasurerId === m.id ? 'bg-amber-100 text-amber-600' : 'bg-slate-50 text-slate-300'}`}>
+                                                        <Icon name={treasurerId === m.id ? "crown" : "user"} className="w-5 h-5" />
+                                                    </div>
+                                                    <div>
+                                                        <p className="font-black uppercase text-sm tracking-tight">{m.name}</p>
+                                                        <button onClick={() => syncData({...data, treasurerId: treasurerId === m.id ? null : m.id})} className={`text-[8px] font-black uppercase ${treasurerId === m.id ? 'text-amber-500' : 'text-slate-300'}`}>
+                                                            {treasurerId === m.id ? 'Thủ quỹ chính' : 'Chọn làm thủ quỹ'}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => { setAmount(''); setShowContributionId(m.id); }} className="bg-emerald-500 text-white px-3 py-2 rounded-xl text-[9px] font-black uppercase active:scale-95 shadow-lg shadow-emerald-100">Nộp quỹ</button>
+                                                    <button onClick={() => setMemberToDelete(m)} className="p-2 text-slate-200 hover:text-rose-500 transition-colors"><Icon name="trash-2" className="w-4 h-4" /></button>
+                                                </div>
+                                            </div>
+                                            <div className="grid grid-cols-3 gap-2 text-center font-black">
+                                                <div className="bg-slate-50 p-2 rounded-xl">
+                                                    <p className="text-[7px] text-slate-400 uppercase">Đã đóng</p>
+                                                    <p className="text-[11px] text-slate-900">{(ms?.totalContributed || 0).toLocaleString()}K</p>
+                                                </div>
+                                                <div className="bg-slate-50 p-2 rounded-xl">
+                                                    <p className="text-[7px] text-slate-400 uppercase">Đã dùng</p>
+                                                    <p className="text-[11px] text-slate-900">{(ms?.totalEnjoyed || 0).toFixed(1)}K</p>
+                                                </div>
+                                                <div className={`p-2 rounded-xl border-2 ${(ms?.balance || 0) >= 0 ? 'bg-indigo-50 border-indigo-100 text-indigo-600' : 'bg-rose-50 border-rose-100 text-rose-600'}`}>
+                                                    <p className="text-[7px] uppercase opacity-70">{(ms?.balance || 0) >= 0 ? 'Dư' : 'Nợ'}</p>
+                                                    <p className="text-[11px]">{(ms?.balance || 0).toFixed(1)}K</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </>
+                        )}
+
+                        {activeTab === 'history_spent' && expenses.map(e => (
+                            <div key={e.id} className={`bg-white p-4 rounded-2xl flex justify-between items-center shadow-sm border animate-bounce-in ${!!e.isAdvance && !e.isProcessed ? 'border-amber-200 bg-amber-50/30' : 'border-slate-50'}`}>
+                                <div className="flex items-center gap-3">
+                                    <div className={`p-2 rounded-lg ${!!e.isAdvance ? 'bg-amber-100 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                                        <Icon name={!!e.isAdvance ? "bell" : "receipt"} />
+                                    </div>
+                                    <div className="max-w-[150px]">
+                                        <div className="flex items-center gap-1">
+                                            <p className="text-xs font-black text-slate-800 truncate">{e.description}</p>
+                                        </div>
+                                        <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wide">{e.date} • {e.payerId==='fund'?'Quỹ chi':members.find(m=>m.id===e.payerId)?.name + ' chi hộ'}</p>
+                                        {!!e.isAdvance && (
+                                            <span className={`text-[7px] px-1.5 py-0.5 rounded font-black uppercase inline-block mt-1 ${e.isProcessed ? 'bg-slate-200 text-slate-500' : 'bg-amber-200 text-amber-700'}`}>
+                                                {e.isProcessed ? 'Đã xử lý' : 'Chờ xử lý'}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <p className="text-xs font-black text-rose-500">-{Number(e.amount).toLocaleString()}K</p>
+                                    <div className="flex flex-col gap-1.5 border-l pl-3 border-slate-100">
+                                        <button onClick={() => { 
+                                            setEditingExpenseId(e.id); 
+                                            setDescription(e.description || ''); 
+                                            setAmount(String(e.amount || '')); 
+                                            setPayerId(e.payerId || 'fund'); 
+                                            setIsAdvance(!!e.isAdvance); 
+                                            setSplitWith(e.splitWith || []); 
+                                            setIsExpenseModalOpen(true); 
+                                        }} className="text-indigo-400 active:scale-75"><Icon name="edit-3" className="w-3.5 h-3.5" /></button>
+                                        <button onClick={() => syncData({...data, expenses: expenses.filter(x=>x.id!==e.id)})} className="text-slate-200 hover:text-rose-400"><Icon name="trash-2" className="w-3.5 h-3.5" /></button>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+
+                        {activeTab === 'history_deposit' && allReceipts.map(r => (
+                            <div key={r.id} className="bg-white p-4 rounded-2xl flex justify-between items-center shadow-sm border border-slate-50 animate-bounce-in">
+                                <div className="flex items-center gap-3">
+                                    <div className={`p-2 rounded-lg ${r.type==='cash' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
+                                        <Icon name={r.type==='cash' ? "arrow-down-left" : "user-check"} className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <p className="text-xs font-black uppercase text-slate-800">{members.find(m=>m.id===r.memberId)?.name}</p>
+                                        <p className="text-[8px] font-bold text-slate-400 uppercase">{r.date} • {r.label}</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <p className={`text-xs font-black ${r.type==='cash' ? 'text-emerald-600' : 'text-blue-600'}`}>+{Number(r.amount).toLocaleString()}K</p>
+                                    {r.type === 'cash' && (
+                                        <button onClick={() => syncData({...data, contributions: contributions.filter(x=>x.id!==r.id)})} className="p-1 text-slate-200"><Icon name="trash-2" className="w-3 h-3" /></button>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </main>
+
+                    {/* Modal Nộp Quỹ */}
+                    {showContributionId && (
+                        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[100] flex items-center justify-center p-6">
+                            <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 text-center animate-bounce-in">
+                                <h3 className="font-black uppercase mb-4 text-[10px] text-slate-400 tracking-widest">Nộp tiền vào quỹ</h3>
+                                <input type="number" autoFocus className="w-full text-5xl font-black text-center text-emerald-600 outline-none mb-6 bg-transparent" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0" />
+                                <div className="flex gap-3">
+                                    <button onClick={()=>setShowContributionId(null)} className="flex-1 py-4 bg-slate-50 rounded-2xl text-[10px] font-black uppercase text-slate-400 font-bold">Hủy</button>
+                                    <button onClick={() => {
+                                        const v = parseFloat(amount);
+                                        if (v) {
+                                            const newC = { id: crypto.randomUUID(), memberId: showContributionId, amount: v, date: new Date().toLocaleTimeString('vi-VN') + ' ' + new Date().toLocaleDateString('vi-VN'), createdAt: Date.now() };
+                                            syncData({...data, contributions: [newC, ...contributions]});
+                                        }
+                                        setShowContributionId(null); setAmount('');
+                                    }} className="flex-[2] py-4 bg-emerald-500 text-white rounded-2xl text-[10px] font-black uppercase shadow-xl shadow-emerald-100 font-bold">Xác nhận nộp</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Modal Ghi Hóa Đơn */}
+                    {isExpenseModalOpen && (
+                        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[100] flex items-end justify-center">
+                            <div className="bg-white w-full max-w-md rounded-t-[3rem] p-8 space-y-5 animate-bounce-in shadow-2xl">
+                                <div className="flex justify-between items-center px-2">
+                                    <h2 className="font-black uppercase text-sm tracking-tight">{editingExpenseId ? 'Sửa hóa đơn' : 'Ghi hóa đơn mới'}</h2>
+                                    <button onClick={()=>{ setIsExpenseModalOpen(false); setEditingExpenseId(null); }} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full"><Icon name="x" className="w-4 h-4"/></button>
+                                </div>
+                                <input className="w-full p-4 bg-slate-50 rounded-2xl font-bold text-sm outline-none border-2 border-transparent focus:border-indigo-500 transition-all shadow-inner" placeholder="Tên khoản chi..." value={description} onChange={e=>setDescription(e.target.value)} />
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="relative">
+                                        <input type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-indigo-600 text-sm outline-none shadow-inner" placeholder="0" value={amount} onChange={e=>setAmount(e.target.value)} />
+                                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[9px] font-black text-slate-300">K VNĐ</span>
+                                    </div>
+                                    <select className="p-4 bg-slate-50 rounded-2xl text-[10px] font-black outline-none shadow-inner" value={payerId} onChange={e=>setPayerId(e.target.value)}>
+                                        <option value="fund">💰 Từ tiền Quỹ</option>
+                                        {members.filter(m => m.id !== treasurerId).map(m=><option key={m.id} value={m.id}>👤 {m.name} chi hộ</option>)}
+                                    </select>
+                                </div>
+
+                                {/* TOGGLE TẠM ỨNG - ĐÃ FIX LỖI WHITE SCREEN */}
+                                <div className="flex items-center gap-3 p-4 bg-amber-50 rounded-2xl border-2 border-amber-100 cursor-pointer select-none active:bg-amber-100" 
+                                     onClick={() => setIsAdvance(prev => !prev)}>
+                                    <div className={`w-6 h-6 rounded-lg flex items-center justify-center transition-all ${isAdvance ? 'bg-amber-500 text-white rotate-12' : 'bg-white text-slate-300 border-2 border-slate-200'}`}>
+                                        <Icon name="bell" className="w-4 h-4" />
+                                    </div>
+                                    <div className="flex-1">
+                                        <p className="text-[10px] font-black uppercase text-amber-900 leading-none mb-1">Khoản Tạm ứng (Cần xác nhận)</p>
+                                        <p className="text-[8px] text-amber-700/60 font-bold uppercase italic">Sẽ hiện nhắc nhở ở trang thống kê</p>
+                                    </div>
+                                    <div className={`w-5 h-5 rounded-full border-2 transition-all flex items-center justify-center ${isAdvance ? 'border-amber-500 bg-amber-500' : 'border-slate-300 bg-white'}`}>
+                                        {!!isAdvance && <Icon name="check" className="w-3 h-3 text-white" />}
+                                    </div>
+                                </div>
+
+                                <div className="p-4 bg-slate-50 rounded-2xl space-y-3 shadow-inner">
+                                    <div className="flex justify-between items-center">
+                                        <p className="text-[8px] font-black uppercase text-slate-400 tracking-widest">Chia cho:</p>
+                                        <button onClick={() => setSplitWith(members.map(m=>m.id))} className="text-[8px] font-black text-indigo-600 uppercase">Tất cả</button>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {members.map(m => (
+                                            <button key={m.id} onClick={() => setSplitWith(prev => prev.includes(m.id) ? prev.filter(i=>i!==m.id) : [...prev, m.id])}
+                                                className={`px-3 py-2 rounded-xl text-[10px] font-black border-2 transition-all active:scale-90 ${splitWith.includes(m.id) ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-100' : 'bg-white text-slate-300 border-slate-100'}`}>{m.name}</button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <button onClick={handleSaveExpense} className="w-full py-5 bg-slate-900 text-white rounded-[2rem] font-black uppercase text-sm shadow-2xl active:scale-95 transition-transform flex items-center justify-center gap-2">
+                                    <Icon name="check-circle-2" className="w-5 h-5" /> Lưu hóa đơn
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Modal Báo cáo Chi tiết */}
+                    {isShareModalOpen && (
+                        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[100] flex items-center justify-center p-6">
+                            <div className="bg-white w-full max-w-md rounded-[2.5rem] p-6 animate-bounce-in shadow-2xl">
+                                <div className="flex justify-between mb-4 font-black uppercase text-sm tracking-tighter"><span>📝 Báo cáo Chuyến đi</span><button onClick={()=>setIsShareModalOpen(false)}><Icon name="x"/></button></div>
+                                <div id="report-content" className="bg-slate-50 p-5 rounded-[1.5rem] text-[10px] font-bold whitespace-pre overflow-y-auto max-h-[60vh] mb-5 text-slate-600 leading-relaxed font-mono shadow-inner border border-slate-100">
+                                    ✈️ TRIP SPLIT SUMMARY<br/>
+                                    📅 Ngày: {new Date().toLocaleDateString('vi-VN')}<br/>
+                                    --------------------------<br/>
+                                    💰 TỔNG CHI: {stats.totalSpent.toLocaleString()}K<br/>
+                                    🏦 QUỸ CÒN: {stats.currentFund.toLocaleString()}K<br/>
+                                    --------------------------<br/>
+                                    CHI TIẾT THÀNH VIÊN:<br/>
+                                    {stats.mStats.map(m => (
+                                        <div key={m.id} className="mt-2 border-b border-slate-200 pb-2">
+                                            👤 {m.name.toUpperCase()}:<br/>
+                                            - ĐÃ ĐÓNG: {(m.totalContributed || 0).toLocaleString()}K<br/>
+                                            - ĐÃ DÙNG: {(m.totalEnjoyed || 0).toFixed(1)}K<br/>
+                                            => {m.balance >= 0 ? 'DƯ' : 'NỢ'}: {Math.abs(m.balance).toFixed(1)}K<br/>
+                                        </div>
+                                    ))}
+                                    <br/>
+                                    DANH SÁCH CHI TIÊU:<br/>
+                                    {expenses.length === 0 ? "(Trống)" : expenses.map(e => (
+                                        <div key={e.id} className="text-[9px]">
+                                            • {e.date}: {e.description} (-{e.amount}K)
+                                        </div>
+                                    ))}
+                                </div>
+                                <button onClick={() => { 
+                                    let report = `✈️ TRIP SPLIT SUMMARY\n💰 Tổng chi: ${stats.totalSpent}K\n🏦 Quỹ còn: ${stats.currentFund}K\n\nCHI TIẾT:\n`;
+                                    stats.mStats.forEach(m => {
+                                        report += `👤 ${m.name}: ${m.balance >= 0 ? 'Dư' : 'Nợ'} ${Math.abs(m.balance).toFixed(1)}K\n`;
+                                    });
+                                    report += `\nDANH SÁCH CHI TIÊU:\n`;
+                                    expenses.forEach(e => { report += `• ${e.date}: ${e.description} (-${e.amount}K)\n`; });
+                                    navigator.clipboard.writeText(report);
+                                    setCopySuccess(true); setTimeout(()=>setCopySuccess(false), 2000);
+                                }} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs shadow-xl shadow-indigo-200 active:scale-95 transition-all">
+                                    {copySuccess ? 'Đã copy báo cáo!' : 'Copy báo cáo nhanh'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {isResetConfirmOpen && (
+                        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[110] flex items-center justify-center p-6">
+                            <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 text-center animate-bounce-in">
+                                <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-4"><Icon name="alert-triangle" className="w-8 h-8" /></div>
+                                <h3 className="font-black uppercase mb-2 text-slate-900">Xóa sạch dữ liệu?</h3>
+                                <p className="text-slate-400 text-[10px] font-bold uppercase mb-6 italic">Mọi dữ liệu trên đám mây sẽ bị xóa vĩnh viễn.</p>
+                                <div className="flex gap-3">
+                                    <button onClick={()=>setIsResetConfirmOpen(false)} className="flex-1 py-4 bg-slate-100 rounded-2xl text-[10px] font-black uppercase text-slate-400">Hủy</button>
+                                    <button onClick={resetAllData} className="flex-1 py-4 bg-rose-600 text-white rounded-2xl text-[10px] font-black uppercase font-bold shadow-lg shadow-rose-200">Xác nhận xóa</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {memberToDelete && (
+                        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[110] flex items-center justify-center p-6">
+                            <div className="bg-white w-full max-sm rounded-[2.5rem] p-8 text-center animate-bounce-in">
+                                <div className="w-16 h-16 bg-rose-50 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-rose-100"><Icon name="user-minus" className="w-7 h-7" /></div>
+                                <p className="font-black mb-2 text-sm uppercase">Xóa {memberToDelete.name}?</p>
+                                <div className="flex gap-3 mt-6">
+                                    <button onClick={()=>setMemberToDelete(null)} className="flex-1 py-4 bg-slate-50 rounded-2xl text-[10px] font-black uppercase text-slate-400">Hủy</button>
+                                    <button onClick={() => { syncData({...data, members: members.filter(m=>m.id!==memberToDelete.id)}); setMemberToDelete(null); }} className="flex-1 py-4 bg-rose-500 text-white rounded-2xl text-[10px] font-black uppercase active:scale-95 font-bold shadow-lg shadow-rose-100">Xóa</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <nav className="fixed bottom-6 left-6 right-6 bg-slate-900/90 backdrop-blur-2xl border border-white/10 flex justify-around items-center p-3 z-40 max-w-sm mx-auto rounded-[2.5rem] shadow-2xl">
+                        <button onClick={()=>setActiveTab('report')} className={`flex flex-col items-center gap-1.5 transition-all ${activeTab==='report'?'text-white scale-110':'text-slate-500'}`}><Icon name="bar-chart-3" className="w-5 h-5"/><span className="text-[7px] font-black uppercase tracking-widest">Thống kê</span></button>
+                        <button onClick={()=>setActiveTab('history_deposit')} className={`flex flex-col items-center gap-1.5 transition-all ${activeTab==='history_deposit'?'text-white scale-110':'text-slate-500'}`}><Icon name="wallet" className="w-5 h-5"/><span className="text-[7px] font-black uppercase tracking-widest">Quỹ</span></button>
+                        <button onClick={()=>setActiveTab('history_spent')} className={`flex flex-col items-center gap-1.5 transition-all ${activeTab==='history_spent'?'text-white scale-110':'text-slate-500'}`}><Icon name="file-text" className="w-5 h-5"/><span className="text-[7px] font-black uppercase tracking-widest">Chi tiêu</span></button>
+                        <button onClick={()=>setIsShareModalOpen(true)} className="flex flex-col items-center gap-1.5 text-slate-500 hover:text-white transition-all"><Icon name="clipboard-list" className="w-5 h-5"/><span className="text-[7px] font-black uppercase tracking-widest">Báo cáo</span></button>
+                    </nav>
+                </div>
+            );
+        };
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
